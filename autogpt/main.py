@@ -7,6 +7,7 @@ from colorama import Fore, Style
 
 from autogpt.agent import Agent
 from autogpt.config import Config, check_openai_api_key
+from autogpt.config.config import check_openai_model
 from autogpt.configurator import create_config
 from autogpt.logs import logger
 from autogpt.memory.vector import get_memory
@@ -25,9 +26,7 @@ from scripts.install_plugin_deps import install_plugin_dependencies
 COMMAND_CATEGORIES = [
     "autogpt.commands.execute_code",
     "autogpt.commands.file_operations",
-    "autogpt.commands.git_operations",
-    "autogpt.commands.google_search",
-    "autogpt.commands.image_gen",
+    "autogpt.commands.web_search",
     "autogpt.commands.web_selenium",
     "autogpt.app",
     "autogpt.commands.task_statuses",
@@ -58,6 +57,7 @@ def run_auto_gpt(
     cfg = Config()
     # TODO: fill in llm values here
     check_openai_api_key()
+    check_openai_model(cfg)
 
     create_config(
         cfg,

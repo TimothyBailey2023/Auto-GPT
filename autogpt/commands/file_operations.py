@@ -4,21 +4,15 @@ from __future__ import annotations
 import hashlib
 import os
 import os.path
-import re
+from pathlib import Path
 from typing import Generator, Literal
-
-import requests
-from colorama import Back, Fore
-from confection import Config
-from requests.adapters import HTTPAdapter, Retry
 
 from autogpt.agent.agent import Agent
 from autogpt.command_decorator import command
 from autogpt.commands.file_operations_utils import read_textual_file
+from autogpt.config import Config
 from autogpt.logs import logger
 from autogpt.memory.vector import MemoryItem, VectorMemory
-from autogpt.spinner import Spinner
-from autogpt.utils import readable_file_size
 
 Operation = Literal["write", "append", "delete"]
 
@@ -119,7 +113,17 @@ def log_operation(
     )
 
 
-@command("read_file", "Read a file", '"filename": "<filename>"')
+@command(
+    "read_file",
+    "Read an existing file",
+    arguments={
+        "filename": {
+            "type": "string",
+            "description": "The path of the file to read",
+            "required": True,
+        }
+    },
+)
 def read_file(filename: str, agent: Agent) -> str:
     """Read a file and return the contents
 
@@ -130,6 +134,7 @@ def read_file(filename: str, agent: Agent) -> str:
         str: The contents of the file
     """
     try:
+        filename = os.path.join(agent.workspace.root, filename)
         content = read_textual_file(filename, logger)
 
         # TODO: invalidate/update memory when file is edited
@@ -168,7 +173,22 @@ def ingest_file(
         logger.warn(f"Error while ingesting file '{filename}': {err}")
 
 
-@command("write_to_file", "Write to file", '"filename": "<filename>", "text": "<text>"')
+@command(
+    "write_to_file",
+    "Write to file",
+    arguments={
+        "filename": {
+            "type": "string",
+            "description": "The name of the file to write to",
+            "required": True,
+        },
+        "text": {
+            "type": "string",
+            "description": "The text to write to the file",
+            "required": True,
+        },
+    },
+)
 def write_to_file(filename: str, text: str, agent: Agent) -> str:
     """Write text to a file
 
@@ -179,85 +199,57 @@ def write_to_file(filename: str, text: str, agent: Agent) -> str:
     Returns:
         str: A message indicating success or failure
     """
-    checksum = text_checksum(text)
-    if is_duplicate_operation("write", filename, agent.config, checksum):
-        return "Error: File has already been updated."
     try:
-        directory = os.path.dirname(filename)
-        os.makedirs(directory, exist_ok=True)
-        with open(filename, "w", encoding="utf-8") as f:
+        workspace_root = agent.workspace.root
+        file_path = os.path.join(workspace_root, filename)
+        file_dir = os.path.dirname(os.path.abspath(file_path))
+
+        if not file_dir.startswith(str(workspace_root)):
+            return "Error: Attempting to write to a file outside of the workspace directory is not allowed"
+
+        if file_dir != workspace_root and not os.path.exists(file_dir):
+            Path(file_dir).mkdir(exist_ok=True)
+
+        with open(file_path, "w+") as f:
             f.write(text)
-        log_operation("write", filename, agent, checksum)
-        return "File written to successfully."
+
+        log_operation("write", filename, agent, text_checksum(text))
+    except BaseException as e:
+        return f"Error: {e}"
+
+    return "File written to successfully."
+
+
+@command(
+    "delete_file",
+    "Delete file",
+    arguments={
+        "filename": {
+            "type": "string",
+            "description": "The path of the file to delete",
+            "required": True,
+        }
+    },
+)
+def delete_file(filename: str, agent: Agent) -> str:
+    """Delete a file
+
+    Args:
+        filename (str): The name of the file to delete
+
+    Returns:
+        str: A message indicating success or failure
+    """
+    if is_duplicate_operation("delete", filename, agent.config):
+        return "Error: File has already been deleted."
+    try:
+        os.remove(filename)
+        log_operation("delete", filename, agent)
+        return "File deleted successfully."
     except Exception as err:
         return f"Error: {err}"
 
 
-@command(
-    "replace_in_file",
-    "Replace text or code in a file",
-    '"filename": "<filename>", '
-    '"old_text": "<old_text>", "new_text": "<new_text>", '
-    '"occurrence_index": "<occurrence_index>"',
-)
-def replace_in_file(
-    filename: str, old_text: str, new_text: str, agent: Agent, occurrence_index=None
-):
-    """Update a file by replacing one or all occurrences of old_text with new_text using Python's built-in string
-    manipulation and regular expression modules for cross-platform file editing similar to sed and awk.
-
-    Args:
-        filename (str): The name of the file
-        old_text (str): String to be replaced. \n will be stripped from the end.
-        new_text (str): New string. \n will be stripped from the end.
-        occurrence_index (int): Optional index of the occurrence to replace. If None, all occurrences will be replaced.
-
-    Returns:
-        str: A message indicating whether the file was updated successfully or if there were no matches found for old_text
-        in the file.
-
-    Raises:
-        Exception: If there was an error updating the file.
-    """
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        old_text = old_text.rstrip("\n")
-        new_text = new_text.rstrip("\n")
-
-        if occurrence_index is None:
-            new_content = content.replace(old_text, new_text)
-        else:
-            matches = list(re.finditer(re.escape(old_text), content))
-            if not matches:
-                return f"No matches found for {old_text} in {filename}"
-
-            if int(occurrence_index) >= len(matches):
-                return f"Occurrence index {occurrence_index} is out of range for {old_text} in {filename}"
-
-            match = matches[int(occurrence_index)]
-            start, end = match.start(), match.end()
-            new_content = content[:start] + new_text + content[end:]
-
-        if content == new_content:
-            return f"No matches found for {old_text} in {filename}"
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        with open(filename, "r", encoding="utf-8") as f:
-            checksum = text_checksum(f.read())
-        log_operation("update", filename, agent, checksum=checksum)
-
-        return f"File {filename} updated successfully."
-    except Exception as e:
-        return "Error: " + str(e)
-
-
-@command(
-    "append_to_file", "Append to file", '"filename": "<filename>", "text": "<text>"'
-)
 def append_to_file(
     filename: str, text: str, agent: Agent, should_log: bool = True
 ) -> str:
@@ -287,39 +279,20 @@ def append_to_file(
         return f"Error: {err}"
 
 
-@command("delete_file", "Delete file", '"filename": "<filename>"')
-def delete_file(filename: str, agent: Agent) -> str:
-    """Delete a file
-
-    Args:
-        filename (str): The name of the file to delete
-
-    Returns:
-        str: A message indicating success or failure
-    """
-    if is_duplicate_operation("delete", filename, agent.config):
-        return "Error: File has already been deleted."
-    try:
-        os.remove(filename)
-        log_operation("delete", filename, agent)
-        return "File deleted successfully."
-    except Exception as err:
-        return f"Error: {err}"
-
-
-@command("list_files", "List Files in Directory", '"directory": "<directory>"')
-def list_files(directory: str, agent: Agent) -> list[str]:
+@command(
+    "list_files",
+    "List files in the workspace",
+    arguments={},
+)
+def list_files(agent: Agent) -> list[str]:
     """lists files in a directory recursively
-
-    Args:
-        directory (str): The directory to search in
 
     Returns:
         list[str]: A list of files found in the directory
     """
     found_files = []
 
-    for root, _, files in os.walk(directory):
+    for root, _, files in os.walk(agent.workspace.root):
         for file in files:
             if file.startswith("."):
                 continue
@@ -329,51 +302,3 @@ def list_files(directory: str, agent: Agent) -> list[str]:
             found_files.append(relative_path)
 
     return found_files
-
-
-@command(
-    "download_file",
-    "Download File",
-    '"url": "<url>", "filename": "<filename>"',
-    lambda config: config.allow_downloads,
-    "Error: You do not have user authorization to download files locally.",
-)
-def download_file(url, filename, agent: Agent):
-    """Downloads a file
-    Args:
-        url (str): URL of the file to download
-        filename (str): Filename to save the file as
-    """
-    try:
-        directory = os.path.dirname(filename)
-        os.makedirs(directory, exist_ok=True)
-        message = f"{Fore.YELLOW}Downloading file from {Back.LIGHTBLUE_EX}{url}{Back.RESET}{Fore.RESET}"
-        with Spinner(message, plain_output=agent.config.plain_output) as spinner:
-            session = requests.Session()
-            retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-            adapter = HTTPAdapter(max_retries=retry)
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-
-            total_size = 0
-            downloaded_size = 0
-
-            with session.get(url, allow_redirects=True, stream=True) as r:
-                r.raise_for_status()
-                total_size = int(r.headers.get("Content-Length", 0))
-                downloaded_size = 0
-
-                with open(filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-
-                        # Update the progress message
-                        progress = f"{readable_file_size(downloaded_size)} / {readable_file_size(total_size)}"
-                        spinner.update_message(f"{message} {progress}")
-
-            return f'Successfully downloaded and locally stored file: "{filename}"! (Size: {readable_file_size(downloaded_size)})'
-    except requests.HTTPError as err:
-        return f"Got an HTTP Error whilst trying to download file: {err}"
-    except Exception as err:
-        return f"Error: {err}"

@@ -20,15 +20,26 @@ DENYLIST_CONTROL = "denylist"
 @command(
     "execute_python_code",
     "Create a Python file and execute it",
-    '"code": "<code>", "basename": "<basename>"',
+    arguments={
+        "code": {
+            "type": "string",
+            "description": "The Python code to run",
+            "required": True,
+        },
+        "name": {
+            "required": True,
+            "type": "string",
+            "description": "A name to be given to the python file",
+        },
+    },
 )
-def execute_python_code(code: str, basename: str, agent: Agent) -> str:
+def execute_python_code(code: str, name: str, agent: Agent) -> str:
     """Create and execute a Python file in a Docker container and return the STDOUT of the
     executed code. If there is any data that needs to be captured use a print statement
 
     Args:
         code (str): The Python code to run
-        basename (str): A name to be given to the Python file
+        name (str): A name to be given to the Python file
 
     Returns:
         str: The STDOUT captured from the code when it ran
@@ -37,10 +48,10 @@ def execute_python_code(code: str, basename: str, agent: Agent) -> str:
     directory = os.path.join(agent.config.workspace_path, ai_name, "executed_code")
     os.makedirs(directory, exist_ok=True)
 
-    if not basename.endswith(".py"):
-        basename = basename + ".py"
+    if not name.endswith(".py"):
+        name = name + ".py"
 
-    path = os.path.join(directory, basename)
+    path = os.path.join(directory, name)
 
     try:
         with open(path, "w+", encoding="utf-8") as f:
@@ -51,7 +62,17 @@ def execute_python_code(code: str, basename: str, agent: Agent) -> str:
         return f"Error: {str(e)}"
 
 
-@command("execute_python_file", "Execute Python File", '"filename": "<filename>"')
+@command(
+    "execute_python_file",
+    "Execute an existing Python file",
+    arguments={
+        "filename": {
+            "type": "string",
+            "description": "The name of te file to execute",
+            "required": True,
+        },
+    },
+)
 def execute_python_file(filename: str, agent: Agent) -> str:
     """Execute a Python file in a Docker container and return the output
 
@@ -171,11 +192,17 @@ def validate_command(command: str, config: Config) -> bool:
 @command(
     "execute_shell",
     "Execute Shell Command, non-interactive commands only",
-    '"command_line": "<command_line>"',
-    lambda cfg: cfg.execute_local_commands,
-    "You are not allowed to run local shell commands. To execute"
+    enabled=lambda cfg: cfg.execute_local_commands,
+    disabled_reason="You are not allowed to run local shell commands. To execute"
     " shell commands, EXECUTE_LOCAL_COMMANDS must be set to 'True' "
     "in your config file: .env - do not attempt to bypass the restriction.",
+    arguments={
+        "command_line": {
+            "type": "string",
+            "description": "The command line to execute",
+            "required": True,
+        }
+    },
 )
 def execute_shell(command_line: str, agent: Agent) -> str:
     """Execute a shell command and return the output
@@ -206,50 +233,6 @@ def execute_shell(command_line: str, agent: Agent) -> str:
 
     os.chdir(current_dir)
     return output
-
-
-@command(
-    "execute_shell_popen",
-    "Execute Shell Command, non-interactive commands only",
-    '"command_line": "<command_line>"',
-    lambda config: config.execute_local_commands,
-    "You are not allowed to run local shell commands. To execute"
-    " shell commands, EXECUTE_LOCAL_COMMANDS must be set to 'True' "
-    "in your config. Do not attempt to bypass the restriction.",
-)
-def execute_shell_popen(command_line, agent: Agent) -> str:
-    """Execute a shell command with Popen and returns an english description
-    of the event and the process id
-
-    Args:
-        command_line (str): The command line to execute
-
-    Returns:
-        str: Description of the fact that the process started and its id
-    """
-    if not validate_command(command_line, agent.config):
-        logger.info(f"Command '{command_line}' not allowed")
-        return "Error: This Shell Command is not allowed."
-
-    current_dir = os.getcwd()
-    # Change dir into workspace if necessary
-    if agent.config.workspace_path not in current_dir:
-        os.chdir(agent.config.workspace_path)
-
-    logger.info(
-        f"Executing command '{command_line}' in working directory '{os.getcwd()}'"
-    )
-
-    do_not_show_output = subprocess.DEVNULL
-    process = subprocess.Popen(
-        command_line, shell=True, stdout=do_not_show_output, stderr=do_not_show_output
-    )
-
-    # Change back to whatever the prior working dir was
-
-    os.chdir(current_dir)
-
-    return f"Subprocess started with PID:'{str(process.pid)}'"
 
 
 def we_are_running_in_a_docker_container() -> bool:
