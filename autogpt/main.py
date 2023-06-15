@@ -6,11 +6,11 @@ from pathlib import Path
 from colorama import Fore, Style
 
 from autogpt.agent import Agent
-from autogpt.commands.command import CommandRegistry
 from autogpt.config import Config, check_openai_api_key
 from autogpt.configurator import create_config
 from autogpt.logs import logger
 from autogpt.memory.vector import get_memory
+from autogpt.models.command_registry import CommandRegistry
 from autogpt.plugins import scan_plugins
 from autogpt.prompts.prompt import DEFAULT_TRIGGERING_PROMPT, construct_main_ai_config
 from autogpt.utils import (
@@ -175,7 +175,8 @@ def run_auto_gpt(
 
     # Initialize memory and make sure it is empty.
     # this is particularly important for indexing and referencing pinecone memory
-    memory = get_memory(cfg, init=True)
+    memory = get_memory(cfg)
+    memory.clear()
     logger.typewriter_log(
         "Using memory of type:", Fore.GREEN, f"{memory.__class__.__name__}"
     )
@@ -189,9 +190,10 @@ def run_auto_gpt(
         memory=memory,
         next_action_count=next_action_count,
         command_registry=command_registry,
-        config=ai_config,
         system_prompt=system_prompt,
         triggering_prompt=DEFAULT_TRIGGERING_PROMPT,
         workspace_directory=workspace_directory,
+        ai_config=ai_config,
+        config=cfg,
     )
     agent.start_interaction_loop()
